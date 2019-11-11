@@ -55,9 +55,9 @@ void setup() {
   pinMode(13, OUTPUT);
   Wire.begin();
   Serial.begin(115200);
-  DDRB |= 0b00011110;
-  PCICR |= 0b00000100;
-  PCMSK2 |= 0b01111000;
+  DDRB |= 0b00011110; // set output pins
+  PCICR |= 0b00000100;  // set register for ISR
+  PCMSK2 |= 0b01111000; // set individual [ins for ISR
   spd1=1000;
   spd2=1000;
   spd3=1000;
@@ -65,14 +65,17 @@ void setup() {
   measuredYawing =0;
   measuredPitching=0;
   measuredRolling=0;
+
+  // wake up IMU
   Wire.beginTransmission(mpu);
   Wire.write(0x6B);
   Wire.write(0x00);
   Wire.endTransmission();
+
+  // read EEPROM for gyro galibration, RC stick max and min values, and minimum motor speeds
   EEPROM.get(0, calX);
   EEPROM.get(4, calY);
   EEPROM.get(8, calZ);
-  Serial.println("gyro calibration values: "+(String)calX+", "+(String)calY+", "+(String)calZ);
   EEPROM.get(12,min1);
   EEPROM.get(14,max1);
   EEPROM.get(16,min2);
@@ -81,15 +84,16 @@ void setup() {
   EEPROM.get(22,max3);
   EEPROM.get(24,min4);
   EEPROM.get(26,max4);
+  EEPROM.get(28,sp1);
+  EEPROM.get(30,sp2);
+  EEPROM.get(32,sp3);
+  EEPROM.get(34,sp4);
+  Serial.println("gyro calibration values: "+(String)calX+", "+(String)calY+", "+(String)calZ);
   Serial.println("stick calibration values: ");
   Serial.println("Channel 1: \t"+(String)min1+"\t"+(String)max1);
   Serial.println("Channel 2: \t"+(String)min2+"\t"+(String)max2);
   Serial.println("Channel 3: \t"+(String)min3+"\t"+(String)max3);
   Serial.println("Channel 4: \t"+(String)min4+"\t"+(String)max4);
-  EEPROM.get(28,sp1);
-  EEPROM.get(30,sp2);
-  EEPROM.get(32,sp3);
-  EEPROM.get(34,sp4);
   Serial.println("motor calibration values: "+(String)sp1+", "+(String)sp2+", "+(String)sp3+", "+(String)sp4);
   delay(1000);
   loopTimer=micros();
@@ -97,20 +101,18 @@ void setup() {
 }
 
 void loop() {
- 
+  // check if loop has ran over 4 ms
   if(micros()-loopTimer > 4000){
-    Serial.println("WOAHHH LONG TIME");
+    Serial.println("Loop taking too long");
   }
-//  
-  //Serial.println((String)spd1+"\t"+(String)spd2+"\t"+(String)spd3+"\t"+(String)spd4);
-  
+
+  // ensures loop always runs to 4 ms
   while(micros()-loopTimer < 3900){}
-  
-//    Serial.println(micros()-loopTimer);
-//  Serial.println(offset);
-//  
+
+  // update loop timer
   loopTimer=micros();
 
+  // if the quadcopter is armed, run the flight loop, else set output to motor speeds to 1000, which is minimum
   if(armed){
     flightLoop();
   }else{
@@ -126,21 +128,23 @@ void loop() {
   
     stopPulse();
   }
-  
+
+  // to check if quadcopter has been armed/disarmed
   checkArmed();
   
 }
 
 
 void flightLoop(){
-//  Serial.println((String)spd1+"\t"+(String)spd2+"\t"+(String)spd3+"\t"+(String)spd4);
 
-  Serial.println((String)outputYaw+"\t"+(String)outputPitch+"\t"+(String)outputRoll+"\t"+(String)throttle);
-//  Serial.println((String)ch1+"\t"+(String)ch2+"\t"+(String)ch3+"\t"+(String)ch4);
-//  Serial.println((String)measuredYawing+"\t"+(String)measuredPitching+"\t"+(String)measuredRolling+"\t");
-// Serial.println((String)measuredPitching+"\t"+(String)targetPitching);
-
+  // to ensure clean startup
   if(count>100){
+    // this is the normal flight loop
+    // first gyro data is converted to useable values and the errors and outputs are calculated
+    // next pulse is started to begin PWM signal
+    // while waiting, gyro data is read from IMU
+    // the pulses then are stopped at the correct time
+    
     convertInput();
     
     computeErrors();
@@ -154,6 +158,7 @@ void flightLoop(){
     stopPulse();
     
   }else{
+    // start up loop
     count++;
     spd1 =1000;
     spd2 = 1000;
@@ -169,16 +174,20 @@ void flightLoop(){
 
 }
 void checkArmed(){
+  
+  // if sticks are held bottom right and bottom left increment counter
   if(mp1 < 1100 && mp2 >1900 && mp3 < 1900 && mp4 < 1100){
     if(armCheck){
       armCount++;  
-//      Serial.println(armCount);
     }
 
   }else{
     armCount = 0;
     armCheck = true;
+    // armCheck ensures the state does not flip back and forth when being held
   }
+
+  // if the counter reaches 250, invert the armed variable
   if (armCheck && armCount > 250){
     armCount = 0;
     armCheck = false;
@@ -196,15 +205,19 @@ void checkArmed(){
   
 }
 void startPulse(){
-//  Serial.println(micros()-pulseTimer);
+  // records start time and writes all 4 outbut bits high
   pulseTimer = micros();
   PORTB |= 0b000011110;
 }
+
 void setMotorSpeeds(){
+  // individual motor speeds are a combination of yaw, pitch, and roll errors
   spd1= sp1 + abs(outputYaw - outputRoll - outputPitch + throttle);
   spd2= sp2 + abs(-outputYaw + outputRoll - outputPitch + throttle);
   spd3= sp3 + abs(outputYaw + outputRoll + outputPitch + throttle);
   spd4= sp4 + abs(-outputYaw - outputRoll + outputPitch + throttle);
+
+  // ensures values are not out of bounds
   if (spd1 > 2000){
     spd1=2000;
   }
@@ -230,8 +243,9 @@ void setMotorSpeeds(){
     spd4=1000;
   }
 }
+
 void stopPulse(){
-//  Serial.println(micros()-pulseTimer);
+  // waits until the timer reaches each desired time and pulls each bit low
   while(PORTB & 0b00011110){
       if(micros()-pulseTimer>spd1){
         PORTB &= 0b11111101;
@@ -250,33 +264,38 @@ void stopPulse(){
 }
 
 void getPosition(){
+  // request 6 bytes sequentially from address 0x43
   Wire.beginTransmission(mpu);
-    Wire.write(0x43); 
-    Wire.endTransmission();
-    Wire.requestFrom(mpu,6);
-    
-    while(Wire.available() < 6);
+  Wire.write(0x43); 
+  Wire.endTransmission();
+  Wire.requestFrom(mpu,6);
 
-    gyroX = Wire.read()<<8|Wire.read();                              
-    gyroY = Wire.read()<<8|Wire.read();
-    gyroZ = Wire.read()<<8|Wire.read();
+  // until 6 bytes are available
+  while(Wire.available() < 6);
 
+  // read the high and low byte for each
+  gyroX = Wire.read()<<8|Wire.read();                              
+  gyroY = Wire.read()<<8|Wire.read();
+  gyroZ = Wire.read()<<8|Wire.read();
+
+  // subtract calibration values
   gyroX -= calX;
   gyroY -= calY;
   gyroZ -= calZ;
-
-  
- 
-  
 }
 
 void computeErrors(){
-    float xDegree = gyroX /65.5;
+  // convert to degrees/sec
+  float xDegree = gyroX /65.5;
   float yDegree = gyroY /65.5;
   float zDegree = -gyroZ /65.5;
-   measuredYawing = measuredYawing * (.7) + zDegree * .3;
+
+  // complimentary filter
+  measuredYawing = measuredYawing * (.7) + zDegree * .3;
   measuredPitching = measuredPitching * (.7) + yDegree * .3;
   measuredRolling = measuredRolling * (.7) + xDegree * .3;
+
+  // PID computations, preventing integral windup
   errorYaw = targetYawing - measuredYawing;
   outputYaw = kpy*errorYaw+kdy*(lastErrorYaw-errorYaw);
   integralYaw += kiy*errorYaw;
@@ -314,10 +333,13 @@ void computeErrors(){
 }
 
 void convertInput(){
+  // maps stick input to correct range using stored calibration data
   mp1 = map(ch1, min1, max1,1000,2000);
   mp2 = map(ch2, min2, max2,1000,2000);
   mp3 = map(ch3, min3, max3,1000,2000);
   mp4 = map(ch4, min4, max4,1000,2000);
+
+  // converts the stick inputs to desired angular velocities in degrees/sec
   targetYawing = maxYawing*(-3+(mp2/500.0));
   targetPitching = maxPitching*(-3+(mp3/500.0));
   targetRolling = maxRolling*(-3+(mp4/500.0));
@@ -325,6 +347,10 @@ void convertInput(){
 }
 
 ISR(PCINT2_vect){
+  // interrupts on change of state to read RC reciever
+  // timers for each channel
+  // bools to monitor if the bit was previously high or low
+  // records the time that each bit spent high
   currTime = micros();
   if(PIND & 0b00001000){
     if(!last1){
